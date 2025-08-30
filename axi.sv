@@ -66,504 +66,371 @@ output reg [1:0] rresp,
 output reg [3:0] rid
     );
     
-    reg [7:0] mem [128]; //memory has 128 locations of 8 bits each
+    reg [7:0] mem [0:127]; //memory has 128 locations of 8 bits each
+    
+    /////////////////////////RESET DECODER//////////////////////////
+    //reset decoder
+    always_ff@(posedge clk)
+    begin
+        if(resetn==0) 
+        begin
+            for(int i=0; i<128; i++) mem[i]<=i;
+        end
+    end 
+    
+    
     
     //consider different fsm for each channel
     
     
     /////////////////////////////WRITE ADDRESS CHANNEL//////////////////////////////
     //states for write address channel
-//    typedef enum  {aw_idle=0, aw_start=1, aw_ready=2} aw_state_type; 
+    
     typedef enum bit [1:0] {aw_idle=0, aw_start=1, aw_ready=2} aw_state_type; 
-    aw_state_type aw_state, aw_next_state;
+    aw_state_type aw_state;
     
     reg [31:0] awaddr_temp; //temporary register to store awaddr
     
     //fsm for write address channel
-    always_comb
-//    always@(posedge clk)
-//    always@(aw_state)
+    always_ff@(posedge clk)
     begin
-        case(aw_state)
-        aw_idle : begin
-            awready =1'b0;
-            if(awvalid)
-            begin
-                aw_next_state = aw_start;
+        if(resetn==0)
+        begin
+            aw_state <= aw_idle;
+        end
+        else
+        begin
+            case(aw_state)
+            aw_idle : begin
+                awready <=1'b0;
+                if(awvalid==1)
+                begin
+                    aw_state <= aw_start;
+                end
+                else
+                begin
+                    aw_state <= aw_idle;
+                end
             end
-            else
-            begin
-                aw_next_state = aw_idle;
+            
+            aw_start : begin
+                awready = 0;
+                if(awvalid) 
+                begin
+                    awaddr_temp <= awaddr;
+                    aw_state <= aw_ready;
+                end
+                else
+                    aw_state <= aw_start;
             end
+            
+            aw_ready : begin
+                awready <= 1'b1;
+                aw_state <= aw_idle;
+            end
+            
+            default : aw_state <= aw_idle; 
+    //dont need default since gives error (if sequential reset decoder and combinational blocks are different)
+    //that aw_state is driven multiple times. here and in reset decoder
+            endcase
         end
         
-        aw_start : begin
-            awready = 0;
-            if(awvalid) 
-            begin
-                awaddr_temp = awaddr;
-                aw_next_state = aw_ready;
-            end
-            else
-                aw_next_state = aw_start;
-        end
-        
-        aw_ready : begin
-            awready = 1'b1;
-            aw_next_state = aw_idle;
-        end
-        
-//        default : aw_state = aw_idle; //dont need default since gives error
-//that aw_state is driven multiple times. here and in reset decoder
-        endcase
     end
     
     
     
     ///////////////////////////////WRITE DATA CHANNEL/////////////////////////
     //states for write data channel
-//    typedef enum {w_idle=0, w_start=1, w_store=2, w_ready_deassert=3} w_state_type;
-    typedef enum bit[1:0] {w_idle=0, w_start=1, w_store=2, w_ready_deassert=3} w_state_type;
-    w_state_type w_state, w_next_state; 
     
-    reg [31:0] wdata_temp;
-    reg [31:0] write_addr, w_return_addr;
-    reg first;
-    reg [7:0] boundary;
-    reg [4:0] burst_len;
+    typedef enum bit[1:0] {w_idle=0, w_start=1, w_store=2, w_ready_deassert=3} w_state_type;
+    w_state_type w_state; 
+    
+    reg [31:0] wdata_temp; //temporary register to store wdata
+    reg [31:0] write_addr, w_return_addr; //current and next adresses
+    reg first; //for first beat awaddr is current address
+    reg [7:0] boundary; //for boundary in wrap burst
+    reg [4:0] burst_len; //to track number of beats
     
     //fsm for write data channel
-    always_comb
-//    always@(posedge clk)
-//    always@(w_state)
+    always_ff@(posedge clk)
     begin
-        case(w_state)
-        w_idle : begin
-            wready = 0;
-            first = 0;
-            burst_len = 0;
-            w_next_state = w_start;
+        if(resetn==0)
+        begin
+            w_state <= w_idle;
         end
-        
-        w_start : begin
-            if(wvalid) 
-            begin
-                wdata_temp = wdata;
-                w_next_state = w_store;
+        else
+        begin
+            case(w_state)
+            w_idle : begin
+                wready <= 0;
+                first <= 0;
+                burst_len <= 0;
+                w_state <= w_start;
             end
-            else
-            begin
-                w_next_state = w_start;
-            end
-        end
-        
-        w_store : begin
-            wready = 1'b1;
-            if((wlast == 0) || (burst_len!=(awlen+1)))
-            begin
-//                burst_len = burst_len + 1;
-                w_next_state = w_ready_deassert;
-                if(first==0)
+            
+            w_start : begin
+                if(wvalid) 
                 begin
-                    first = 1;
-                    write_addr = awaddr_temp;
+                    wready <= 1'b0;
+                    wdata_temp <= wdata;
+                    burst_len <= burst_len + 1;
+                    if(first==0)
+                    begin
+                        first = 1;
+                        write_addr <= awaddr_temp;
+                    end
+                    else
+                    begin
+                        write_addr <= w_return_addr;
+                    end
+                    w_state <= w_store;
                 end
                 else
                 begin
-                    write_addr = w_return_addr;
+                    w_state <= w_start; //in same state till wvalid is asserted
                 end
             end
-            else
-            begin
-//                burst_len = burst_len + 1;
-                write_addr = w_return_addr;
-                w_next_state = w_idle;
+            
+            w_store : begin
+                wready <= 1'b1;
+                w_state <= w_ready_deassert;
+                case(awburst)
+                2'b00 : begin //fixed
+                    w_return_addr <= data_wr_fixed(awaddr, wstrb);
+                end
+                
+                2'b01 : begin //incr
+                    w_return_addr <= data_wr_incr(write_addr, wstrb);
+                end
+                
+                2'b10 : begin //wrap
+                    boundary = wrap_boundary(awsize, awlen);
+                    w_return_addr = data_wr_wrap(write_addr, boundary, wstrb);
+                end
+                endcase
             end
             
-            case(awburst)
-            2'b00 : begin //fixed
-                w_return_addr = data_wr_fixed(awaddr, wstrb);
+            w_ready_deassert : begin
+                wready <= 1'b0;
+                if(wlast==0 || burst_len != (awlen+1))
+                begin
+                    w_state <= w_start;
+                end
+                else
+                begin
+                    w_state <= w_idle; //if end of burst goes to w_idle state
+                end
             end
             
-            2'b01 : begin //incr
-                w_return_addr = data_wr_incr(write_addr, wstrb);
-            end
-            
-            2'b10 : begin //wrap
-                boundary = wrap_boundary(awsize, awlen);
-                w_return_addr = data_wr_wrap(write_addr, boundary, wstrb);
-            end
-            endcase
-            
-            burst_len = burst_len + 1;
+            default : w_state <= w_idle;
+            endcase  
         end
-        
-        w_ready_deassert : begin
-            wready = 1'b0;
-            if(burst_len != (awlen+1))
-            begin
-                w_next_state = w_start;
-            end
-            else
-            begin
-                w_next_state = w_idle;
-            end
-        end
-        
-//        default : w_state = w_idle;
-        endcase
     end
     
     
     
     /////////////////////////////WRITE RESPONSE CHANNEL////////////////////////
     //states for write response channel
+
     typedef enum bit[1:0] {b_idle=0, b_detect_last=1, b_start=2, b_wait=3} b_state_types;
-    b_state_types b_state, b_next_state;
+    b_state_types b_state;
     
     //fsm for write response channel
-    always_comb
-//    always@(posedge clk)
-//    always@(b_state)
+    always_ff@(posedge clk)
     begin
-        case(b_state)
-        b_idle : begin
-            bvalid = 0;
-            bresp = 0;
-            bid = 0;
-            b_next_state = b_detect_last;
+        if(resetn==0)
+        begin
+            b_state <= b_idle;
         end
-        
-        b_detect_last : begin
-            if(wlast || (burst_len==awlen+1))
-                b_next_state = b_start;
-            else
-                b_next_state = b_detect_last;
+        else
+        begin
+            case(b_state)
+            b_idle : begin
+                bvalid <= 0;
+                bresp <= 0;
+                bid <= 0;
+                b_state <= b_detect_last;
+            end
+            
+            b_detect_last : begin
+                if(wlast || (burst_len==awlen+1)) //waits till last beat is detected
+                    b_state <= b_start;
+                else
+                    b_state <= b_detect_last;
+            end
+            
+            b_start : begin
+                bvalid <= 1;
+                bid <= awid;
+                if((awaddr < 128) && (awsize<=3))
+                    bresp <= 2'b00;
+                else if(awaddr > 127) 
+                    bresp <= 2'b11;
+                else
+                    bresp <= 2'b11;
+                b_state <= b_wait;
+            end
+            
+            b_wait : begin
+                if(bready) //waits till bready is asserted
+                    b_state <= b_idle;
+                else
+                    b_state <= b_wait;
+            end
+            
+            default : b_state <= b_idle;
+            endcase
         end
-        
-        b_start : begin
-            bvalid = 1;
-            bid = awid;
-            if((awaddr < 128) && (awsize<=3))
-                bresp = 2'b00;
-            else if(awaddr > 127) 
-                bresp = 2'b10;
-            else
-                bresp = 2'b11;
-            b_next_state = b_wait;
-        end
-        
-        b_wait : begin
-            if(bready)
-                b_next_state = b_idle;
-            else
-                b_next_state = b_wait;
-        end
-        
-//        default : b_state = b_idle;
-        endcase
     end
     
     
     
     //////////////////////////////READ ADDRESS CHANNEL/////////////////////////////
     //states for read address channel
+
     typedef enum bit[1:0] {ar_idle=0, ar_start=1, ar_ready=2} ar_state_type;
-    ar_state_type ar_state, ar_next_state;
+    ar_state_type ar_state;
     
-    reg [31:0] araddr_temp;
+    reg [31:0] araddr_temp; //temporary register to store read address
     
     //fsm for read address channel
-    always_comb
-//    always@(posedge clk)
-//    always@(ar_state)
+    always_ff@(posedge clk)
     begin
-        case(ar_state)
-        ar_idle : begin
-            arready = 0;
-            ar_next_state = ar_start;
+        if(resetn==0)
+        begin
+            ar_state <= ar_idle;
         end
-        
-        ar_start : begin
-            if(arvalid) 
-            begin
-                araddr_temp = araddr;
-                ar_next_state = ar_ready;
+        else
+        begin
+            case(ar_state)
+            ar_idle : begin
+                arready <= 0;
+                ar_state <= ar_start;
             end
-            else
-                ar_next_state = ar_start;
+            
+            ar_start : begin
+                if(arvalid==1) 
+                begin
+                    araddr_temp <= araddr;
+                    ar_state <= ar_ready;
+                end
+                else
+                    ar_state <= ar_start;
+            end
+            
+            ar_ready : begin
+                arready <= 1'b1;
+                ar_state <= ar_idle;
+            end
+            
+            default : ar_state <= ar_idle;
+            endcase
         end
-        
-        ar_ready : begin
-            arready = 1'b1;
-            ar_next_state = ar_idle;
-        end
-        
-//        default : ar_state = ar_idle;
-        endcase
     end
     
     
-    
+
+
     ///////////////////////////READ DATA CHANNEL////////////////////////
     //states for read data channel
-//    typedef enum bit [2:0] {r_idle=0, r_start=1, r_wait=2, r_valid_deassert=3, r_error=4} r_state_type;
-//    r_state_type r_state, r_next_state;
+    typedef enum bit [2:0] {r_idle=0, r_start=1, r_load=2, r_wait=3, r_valid_deassert=4} r_state_type;
+    r_state_type r_state;
     
-//    reg [4:0] r_burst_len;
-//    reg r_first=0;
-//    reg [31:0] read_addr, r_return_addr;
-//    reg [7:0] r_boundary;
+    reg [4:0] r_burst_len; //to track beats of burst
+    reg r_first; //first beat current address is araddr else is calculated return addr
+    reg [31:0] read_addr, r_return_addr; //current and next address 
+    reg [7:0] r_boundary; //boundary for wrap burst
     
-//    //fsm for read data channel
-//    always_comb
-////    always@(posedge clk)
-////    always@(r_state)
-//    begin
-//        case(r_state)
-//        r_idle : begin
-//            rvalid = 0;
-//            rresp = 0;
-//            rid = 0;
-//            rdata = 0;
-//            rlast = 0;
-//            r_first = 0;
-//            r_burst_len = 0;
-//            if(arvalid == 1 && arready == 1)
-//                r_next_state = r_start;
-//            else
-//                r_next_state = r_idle;
-//        end
-        
-//        r_start : begin
-//            if((araddr_temp < 128) && (arsize <= 3'b010))
-//            begin
-//                rvalid = 1'b1;
-//                rresp = 2'b00; //okay
-//                rid = arid;
-//                r_burst_len = r_burst_len + 1;
-//                if(r_burst_len == (arlen+1))
-//                begin
-//                    rlast = 1;
-//                end
-//                else
-//                begin
-//                    rlast = 0;
-//                end
-//                if(r_first==0)
-//                begin
-//                    r_first = 1;
-//                    read_addr = araddr_temp;
-//                end
-//                else
-//                begin
-////                    r_first=0;
-//                    read_addr = r_return_addr;
-//                end
-                
-//                case(arburst)
-//                2'b00 : begin //fixed
-//                    r_return_addr = r_data_fixed(read_addr, arsize);
-////                    r_data_fixed(araddr_temp, arsize);
-//                end
-//                2'b01 : begin //incr
-//                    r_return_addr = r_data_incr(read_addr, arsize);
-//                end
-//                2'b10 : begin //wrap
-//                    r_boundary = wrap_boundary(arsize, arlen);
-//                    r_return_addr = r_data_wrap(read_addr, r_boundary, arsize);
-//                end
-//                endcase
-                
-////                r_burst_len = r_burst_len + 1;
-//                r_next_state = r_wait;
-//            end
-//            else if((araddr_temp >=128) && (arsize <= 3'b010))
-//            begin
-//                rresp = 2'b01;
-//                rid = arid;
-//                rlast = 1;
-//                r_next_state = r_error;
-//                end
-//            else
-//            begin
-//                rresp = 2'b11;
-//                rid = arid;
-//                rlast = 1;
-//                r_next_state = r_error;
-//            end
-//        end
-        
-//        r_wait : begin
-//            if(rready)
-//            begin
-//                if(r_burst_len==(arlen + 1))
-//                begin
-//                    r_next_state = r_idle;
-//                end
-//                else
-//                begin
-//                    r_next_state = r_valid_deassert;
-//                end
-//            end
-//            else
-//            begin
-//                r_next_state = r_wait;
-//            end
-//        end
-        
-//        r_valid_deassert : begin
-//            rvalid = 0;
-//            if(r_burst_len == (arlen + 1))
-//            begin
-////                rvalid = 0;
-//                r_next_state = r_idle;
-//            end
-//            else
-//            begin
-////                rvalid = 0;
-//                r_next_state = r_start;
-//            end
-//        end
-        
-//        r_error : begin
-//            rvalid = 1'b1;
-//            if(rready)
-//            begin
-//                r_next_state = r_idle;
-//            end
-//            else
-//            begin
-//                r_next_state = r_error;
-//            end
-//        end
-        
-////        default : r_state = r_idle;
-//        endcase
-//    end
-    
-    
-    ///////////////////////////READ DATA CHANNEL////////////////////////
-//states for read data channel
-typedef enum bit [2:0] {r_idle=0, r_start=1, r_wait=2, r_valid_deassert=3, r_error=4} r_state_type;
-r_state_type r_state, r_next_state;
-
-reg [4:0] r_burst_len;
-reg r_first;
-reg [31:0] read_addr, r_return_addr;
-reg [7:0] r_boundary;
-
-// ? CORRECTED - Single always_ff for read data channel
-always_ff@(posedge clk) begin
-    if(resetn == 0) begin
-        r_state <= r_idle;
-        rvalid <= 0;
-        rresp <= 0;
-        rid <= 0;
-        rdata <= 0;
-        rlast <= 0;
-        r_first <= 0;
-        r_burst_len <= 0;
-        read_addr <= 0;
-        r_return_addr <= 0;
-    end
-    else begin
-        case(r_state)
-        r_idle : begin
-            rvalid <= 0;
-            rresp <= 0;
-            rid <= 0;
-            rdata <= 0;
-            rlast <= 0;
-            r_first <= 0;
-            r_burst_len <= 0;
-            if(arvalid == 1 && arready == 1)
-                r_state <= r_start;
-            else
-                r_state <= r_idle;
+    always_ff@(posedge clk) begin
+        if(resetn == 0) begin
+            r_state <= r_idle;
         end
-        
-        r_start : begin
-            if((araddr_temp < 128) && (arsize <= 3'b010)) begin
+        else begin
+            case(r_state)
+            r_idle : begin
+                rvalid <= 0;
+                rresp <= 0;
+                rid <= 0;
+                rdata <= 0;
+                rlast <= 0;
+                r_first <= 0;
+                r_burst_len <= 0;
+                if(arvalid == 1 && arready == 1)
+                    r_state <= r_start;
+                else
+                    r_state <= r_idle;
+            end
+            
+            r_start : begin
+                if((araddr_temp < 128) && (arsize <= 3'b010)) begin //if all parameters in bound
+                    rresp <= 2'b00; //response = OKAY
+                    rid <= arid;
+                    r_burst_len <= r_burst_len + 1;                  
+                    if(r_first == 0) begin
+                        r_first <= 1;
+                        read_addr <= araddr_temp;
+                    end
+                    else begin
+                        read_addr <= r_return_addr;
+                    end                    
+                end
+                else if((araddr_temp >= 128) && (arsize <= 3'b010)) begin 
+                    rresp <= 2'b11; //rresp = DECERR
+                    rid <= arid;
+                    r_burst_len <= r_burst_len + 1;
+                end
+                else begin
+                    rresp <= 2'b11; //rresp = DECERR
+                    rid <= arid;
+                    r_burst_len <= r_burst_len + 1;
+                end
+                r_state <= r_load;
+            end
+            
+            r_load : begin
                 rvalid <= 1'b1;
-                rresp <= 2'b00;
-                rid <= arid;
-                r_burst_len <= r_burst_len + 1;
-                
-                if(r_burst_len + 1 == (arlen+1))  // Check next value
+                if(r_burst_len == (arlen+1))
                     rlast <= 1;
                 else
                     rlast <= 0;
-                
-                if(r_first == 0) begin
-                    r_first <= 1;
-                    read_addr = araddr_temp;
+                if(rresp==2'b00)
+                begin
+                    case(arburst)
+                    2'b00 : begin //fixed
+                        r_return_addr <= r_data_fixed(read_addr, arsize);
+                    end
+                    2'b01 : begin //incr
+                        r_return_addr <= r_data_incr(read_addr, arsize);
+                    end
+                    2'b10 : begin //wrap
+                        r_boundary = wrap_boundary(arsize, arlen);
+                        r_return_addr = r_data_wrap(read_addr, r_boundary, arsize);
+                    end
+                    endcase
                 end
-                else begin
-                    read_addr = r_return_addr;
-                end
-                
-                // Calculate rdata and next address
-                case(arburst)
-                2'b00 : begin //fixed
-                    r_return_addr <= r_data_fixed(read_addr, arsize);
-                end
-                2'b01 : begin //incr
-                    r_return_addr <= r_data_incr(read_addr, arsize);
-                end
-                2'b10 : begin //wrap
-                    r_boundary <= wrap_boundary(arsize, arlen);
-                    r_return_addr <= r_data_wrap(read_addr, r_boundary, arsize);
-                end
-                endcase
-                
                 r_state <= r_wait;
             end
-            else if((araddr_temp >= 128) && (arsize <= 3'b010)) begin
-                rvalid <= 1'b1;
-                rresp <= 2'b01;
-                rid <= arid;
-                rlast <= 1;
-                r_state <= r_error;
+            
+            r_wait : begin
+                if(rready) 
+                begin
+                    r_state <= r_valid_deassert;
+                end
+                else
+                    r_state <= r_wait;
             end
-            else begin
-                rvalid <= 1'b1;
-                rresp <= 2'b11;
-                rid <= arid;
-                rlast <= 1;
-                r_state <= r_error;
-            end
-        end
-        
-        r_wait : begin
-            if(rready) begin
+            
+            r_valid_deassert : begin
+                rvalid <= 0;
+                rlast <= 0;
                 if(r_burst_len == (arlen + 1))
                     r_state <= r_idle;
                 else
-                    r_state <= r_valid_deassert;
-            end
-            else
-                r_state <= r_wait;
+                    r_state <= r_start;
+            end 
+            endcase
         end
-        
-        r_valid_deassert : begin
-            rvalid <= 0;
-            if(r_burst_len == (arlen + 1))
-                r_state <= r_idle;
-            else
-                r_state <= r_start;
-        end
-        
-        r_error : begin
-            rvalid <= 1'b1;
-            if(rready)
-                r_state <= r_idle;
-            else
-                r_state <= r_error;
-        end
-        endcase
     end
-end
 
     
     
@@ -650,7 +517,7 @@ end
         end
         endcase
         
-        return addr;
+        return addr; //returns same address
     endfunction
     
     
@@ -1025,7 +892,6 @@ end
     
     //read data fixed
     function bit [31:0] r_data_fixed(input bit [31:0] addr, input bit [2:0] size);
-//    function void r_data_fixed(input bit [31:0] addr, input bit [2:0] size);
         unique case(size)
         3'b000 : begin
             rdata[7:0] = mem[addr];
@@ -1048,7 +914,7 @@ end
             rdata[31:24] = mem[addr+3];
         end
         endcase
-        return addr;
+        return addr; //returns same address
     endfunction
     
     
@@ -1139,34 +1005,5 @@ end
         end
         endcase
     endfunction
-    
-    
-    
-    
-    
-    /////////////////////////RESET DECODER//////////////////////////
-    //reset decoder
-    always_ff@(posedge clk)
-    begin
-        if(resetn==0) 
-        begin
-//            $display("%0t : IN RESET - setting states to idle", $time);
-            aw_state <= aw_idle;
-            w_state <= w_idle;
-            b_state <= b_idle;
-            ar_state <= ar_idle;
-//            r_state <= r_idle;
-            for(int i=0; i<128; i++) mem[i]=i;
-        end
-        else
-        begin
-//            $display("%0t : NOT IN RESET - aw_state=%s becoming aw_next_state=%s", 
-//                 $time, aw_state.name(), aw_next_state.name());
-            aw_state <= aw_next_state;
-            w_state <= w_next_state;
-            b_state <= b_next_state;
-            ar_state <= ar_next_state;
-//            r_state <= r_next_state;
-        end
-    end 
+
 endmodule
