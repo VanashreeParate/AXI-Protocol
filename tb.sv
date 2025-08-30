@@ -161,8 +161,8 @@ endclass
 
 
 class generator;
-    mailbox#(transaction) mbxgd;
-    mailbox#(bit) mbxgm; //for sending op
+    mailbox #(transaction) mbxgd;
+    mailbox #(bit) mbxgm; //for sending op
     transaction tr;
     int iterations = 0;
     event drvnext, sconext;
@@ -353,13 +353,13 @@ endclass
 class monitor;
     virtual axi_slave_if vif;
     mailbox #(transaction) mbxms;
-    mailbox #(transaction) mbxgm;
+    mailbox #(bit) mbxgm;
     transaction tr;
     bit trref;
     int len = 0;
     event monnext;
     
-    function new(mailbox #(transaction) mbxms, mailbox #(transaction) mbxgm);
+    function new(mailbox #(transaction) mbxms, mailbox #(bit) mbxgm);
         this.mbxms = mbxms;
         this.mbxgm = mbxgm;
     endfunction
@@ -369,7 +369,7 @@ class monitor;
         forever begin
             mbxgm.get(trref);
             @(posedge vif.clk);
-            if(trref.op == 0) //write operation
+            if(trref == 0) //write operation
             begin
                 @(posedge vif.awready);
                 tr.op = 0;
@@ -400,7 +400,7 @@ class monitor;
                     -> monnext;
                 end
             end
-            else if(trref.op == 1) //read operation
+            else if(trref == 1) //read operation
             begin
                 @(posedge vif.arready);
                 tr.op = 1;
